@@ -1,227 +1,608 @@
-#!/usr/bin/env python3
-"""
-Content Curator AI Agent
-Uses AI to intelligently rank and select top startup stories
-"""
-
-import re
-import subprocess
-import json
-from datetime import datetime
-import requests
 import os
+import re
+import json
+import logging
+import requests
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass
+import hashlib
+from urllib.parse import urlparse
+import time
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@dataclass
+class Article:
+    """Data class to represent a news article"""
+    title: str
+    content: str
+    url: str
+    source: str
+    published_date: datetime
+    summary: str = ""
+    relevance_score: float = 0.0
+    categories: List[str] = None
+    keywords: List[str] = None
+    
+    def __post_init__(self):
+        if self.categories is None:
+            self.categories = []
+        if self.keywords is None:
+            self.keywords = []
 
 class ContentCuratorAgent:
-    """AI Agent responsible for curating and ranking startup news"""
+    """
+    Content Curator Agent for Indian Startup News Bot
+    Handles article processing, summarization, and content curation
+    """
     
-    def __init__(self):
-        """Initialize the content curator with scoring criteria"""
+    def __init__(self, api_key: Optional[str] = None):
+        """
+        Initialize the Content Curator Agent
         
-        # Scoring weights for different types of news
-        self.scoring_criteria = {
-            'funding_keywords': {
-                'unicorn': 10, 'decacorn': 10, 'ipo': 9, 'acquisition': 8,
-                'merger': 8, 'series c': 7, 'series b': 6, 'series a': 5,
-                'seed': 4, 'pre-seed': 3, 'raised': 4, 'funding': 3,
-                'investment': 3, 'venture capital': 4, 'valuation': 5
-            },
-            'amount_multipliers': {
-                'billion': 8, 'crore': 3, 'million': 2, '100 crore': 6,
-                '500 crore': 7, '1000 crore': 8, '$': 2, '₹': 1
-            },
-            'company_stage': {
-                'startup': 2, 'unicorn': 10, 'public': 6, 'listed': 6,
-                'enterprise': 4, 'b2b': 3, 'b2c': 3, 'd2c': 3
-            },
-            'sectors': {
-                'fintech': 5, 'edtech': 4, 'healthtech': 5, 'foodtech': 3,
-                'ecommerce': 4, 'saas': 5, 'ai': 6, 'blockchain': 4,
-                'crypto': 3, 'mobility': 4, 'logistics': 4
-            },
-            'news_type': {
-                'launched': 3, 'partnership': 4, 'expansion': 4,
-                'hired': 2, 'appointed': 3, 'regulation': 5, 'policy': 5,
-                'government': 4, 'international': 4, 'global': 4
-            }
+        Args:
+            api_key: Optional API key for external services
+        """
+        self.api_key = api_key or os.getenv('OPENAI_API_KEY')
+        self.processed_urls = set()
+        self.startup_keywords = self._load_startup_keywords()
+        self.indian_startup_terms = self._load_indian_terms()
+        self.category_keywords = self._load_category_keywords()
+        
+    def _load_startup_keywords(self) -> List[str]:
+        """Load startup-related keywords for relevance scoring"""
+        return [
+            'startup', 'startups', 'entrepreneur', 'entrepreneurship', 'venture capital',
+            'vc', 'funding', 'investment', 'investor', 'seed funding', 'series a',
+            'series b', 'series c', 'ipo', 'unicorn', 'decacorn', 'valuation',
+            'fintech', 'edtech', 'healthtech', 'agritech', 'foodtech', 'mobility',
+            'e-commerce', 'saas', 'b2b', 'b2c', 'marketplace', 'platform',
+            'innovation', 'technology', 'digital', 'mobile app', 'artificial intelligence',
+            'machine learning', 'blockchain', 'cryptocurrency', 'IoT', 'AR', 'VR',
+            'incubator', 'accelerator', 'mentor', 'bootstrap', 'pivot', 'scale',
+            'growth hacking', 'product market fit', 'mvp', 'minimum viable product'
+        ]
+    
+    def _load_indian_terms(self) -> List[str]:
+        """Load India-specific terms for relevance scoring"""
+        return [
+            'india', 'indian', 'mumbai', 'delhi', 'bangalore', 'bengaluru',
+            'hyderabad', 'chennai', 'pune', 'kolkata', 'ahmedabad', 'surat',
+            'jaipur', 'lucknow', 'kanpur', 'nagpur', 'indore', 'thane',
+            'bhopal', 'visakhapatnam', 'pimpri', 'patna', 'vadodara',
+            'ghaziabad', 'ludhiana', 'agra', 'nashik', 'faridabad',
+            'meerut', 'rajkot', 'kalyan', 'vasai', 'varanasi', 'srinagar',
+            'aurangabad', 'dhanbad', 'amritsar', 'navi mumbai', 'allahabad',
+            'howrah', 'gwalior', 'jabalpur', 'coimbatore', 'vijayawada',
+            'jodhpur', 'madurai', 'raipur', 'kota', 'guwahati', 'chandigarh',
+            'solapur', 'hubli', 'tiruchirappalli', 'bareilly', 'mysore',
+            'tiruppur', 'gurgaon', 'noida', 'bhubaneswar', 'salem',
+            'mira bhayandar', 'thiruvananthapuram', 'bhiwandi', 'saharanpur',
+            'gorakhpur', 'guntur', 'bikaner', 'amravati', 'noida', 'jamshedpur',
+            'bhilai', 'warangal', 'cuttack', 'firozabad', 'kochi', 'bhavnagar',
+            'dehradun', 'durgapur', 'asansol', 'rourkela', 'nanded', 'kolhapur',
+            'ajmer', 'akola', 'gulbarga', 'jamnagar', 'ujjain', 'loni',
+            'siliguri', 'jhansi', 'ulhasnagar', 'nellore', 'jammu', 'sangli miraj kupwad',
+            'belgaum', 'mangalore', 'ambattur', 'tirunelveli', 'malegaon',
+            'gaya', 'jalgaon', 'udaipur', 'maheshtala'
+        ]
+    
+    def _load_category_keywords(self) -> Dict[str, List[str]]:
+        """Load category-specific keywords for article classification"""
+        return {
+            'fintech': [
+                'fintech', 'financial technology', 'payments', 'digital payments',
+                'upi', 'wallet', 'neobank', 'lending', 'credit', 'insurance',
+                'insurtech', 'wealthtech', 'robo advisor', 'cryptocurrency',
+                'blockchain', 'digital banking', 'payment gateway', 'pos',
+                'point of sale', 'merchant', 'acquirer', 'settlement'
+            ],
+            'edtech': [
+                'edtech', 'education technology', 'e-learning', 'online learning',
+                'mooc', 'lms', 'learning management', 'upskilling', 'reskilling',
+                'skill development', 'test prep', 'coaching', 'tutoring',
+                'educational content', 'gamification', 'adaptive learning'
+            ],
+            'healthtech': [
+                'healthtech', 'telemedicine', 'digital health', 'health tech',
+                'medical technology', 'diagnostics', 'healthcare', 'telehealth',
+                'medical devices', 'pharma', 'biotechnology', 'wellness',
+                'mental health', 'fitness', 'nutrition', 'medtech'
+            ],
+            'ecommerce': [
+                'e-commerce', 'ecommerce', 'online retail', 'marketplace',
+                'shopping', 'consumer', 'd2c', 'direct to consumer',
+                'retail tech', 'fashion', 'beauty', 'electronics',
+                'home decor', 'furniture', 'grocery', 'food delivery'
+            ],
+            'mobility': [
+                'mobility', 'transportation', 'logistics', 'supply chain',
+                'delivery', 'ride sharing', 'cab', 'taxi', 'auto',
+                'bike taxi', 'electric vehicle', 'ev', 'autonomous',
+                'fleet management', 'last mile', 'warehousing'
+            ],
+            'agritech': [
+                'agritech', 'agriculture technology', 'farming', 'precision agriculture',
+                'farm tech', 'rural', 'farmer', 'crop', 'livestock',
+                'agricultural', 'food security', 'supply chain agriculture'
+            ],
+            'proptech': [
+                'proptech', 'real estate', 'property', 'housing', 'rental',
+                'commercial real estate', 'construction tech', 'smart city',
+                'urban planning', 'facility management'
+            ],
+            'enterprise': [
+                'enterprise', 'b2b', 'business to business', 'saas',
+                'software as a service', 'erp', 'crm', 'hr tech',
+                'hrtech', 'payroll', 'compliance', 'automation',
+                'productivity', 'collaboration', 'workflow'
+            ]
         }
-        
-        # Simple fallback scoring (no AI dependencies)
-        self.ai_available = False
     
-    def curate_top_stories(self, articles, target_count=10):
-        """Main method to curate and rank stories"""
-        print(f"🧠 Starting content curation of {len(articles)} articles...")
+    def process_articles(self, raw_articles: List[Dict]) -> List[Article]:
+        """
+        Process raw articles into Article objects with enhanced metadata
         
-        if len(articles) == 0:
-            return []
-        
-        # Calculate base scores using keyword analysis
-        print("📊 Calculating relevance scores...")
-        scored_articles = self._calculate_base_scores(articles)
-        
-        # Apply recency boost
-        scored_articles = self._apply_recency_boost(scored_articles)
-        
-        # Ensure diversity in selection
-        final_selection = self._ensure_diversity(scored_articles, target_count)
-        
-        # Generate summaries
-        final_selection = self._generate_summaries(final_selection)
-        
-        print(f"✅ Selected top {len(final_selection)} stories")
-        return final_selection
-    
-    def _calculate_base_scores(self, articles):
-        """Calculate base importance scores using keyword analysis"""
-        scored_articles = []
-        
-        for article in articles:
-            score = 0
-            content = (article['title'] + ' ' + article['summary']).lower()
+        Args:
+            raw_articles: List of raw article dictionaries
             
-            # Score based on funding keywords
-            for keyword, weight in self.scoring_criteria['funding_keywords'].items():
-                if keyword in content:
-                    score += weight
-            
-            # Score based on amount mentioned
-            for amount, multiplier in self.scoring_criteria['amount_multipliers'].items():
-                if amount in content:
-                    score += multiplier
-            
-            # Score based on company stage
-            for stage, weight in self.scoring_criteria['company_stage'].items():
-                if stage in content:
-                    score += weight
-            
-            # Score based on sector
-            for sector, weight in self.scoring_criteria['sectors'].items():
-                if sector in content:
-                    score += weight
-            
-            # Score based on news type
-            for news_type, weight in self.scoring_criteria['news_type'].items():
-                if news_type in content:
-                    score += weight
-            
-            # Add existing relevance score from collector
-            score += article.get('relevance_score', 0)
-            
-            article['importance_score'] = score
-            scored_articles.append(article)
+        Returns:
+            List of processed Article objects
+        """
+        processed_articles = []
         
-        return scored_articles
-    
-    def _apply_recency_boost(self, articles):
-        """Apply recency boost to scores"""
-        now = datetime.now()
-        
-        for article in articles:
+        for raw_article in raw_articles:
             try:
-                pub_time = article['published']
-                hours_ago = (now - pub_time).total_seconds() / 3600
+                # Skip if already processed
+                if raw_article.get('url') in self.processed_urls:
+                    continue
                 
-                # Boost recent articles
-                if hours_ago < 6:
-                    article['importance_score'] += 5
-                elif hours_ago < 12:
-                    article['importance_score'] += 3
-                elif hours_ago < 24:
-                    article['importance_score'] += 1
-                    
-            except:
-                pass  # Skip if date parsing fails
-        
-        return articles
-    
-    def _ensure_diversity(self, articles, target_count):
-        """Ensure diversity in source and topic selection"""
-        # Sort by importance score
-        articles.sort(key=lambda x: x['importance_score'], reverse=True)
-        
-        selected = []
-        sources_used = []
-        keywords_used = set()
-        
-        # First pass: select high-scoring diverse articles
-        for article in articles:
-            if len(selected) >= target_count:
-                break
-            
-            source = article['source']
-            content_words = set(article['title'].lower().split())
-            
-            # Check for diversity
-            source_count = sources_used.count(source)
-            source_limit_reached = source_count >= 3
-            too_similar = len(content_words & keywords_used) > 2
-            
-            if not source_limit_reached and not too_similar:
-                selected.append(article)
-                sources_used.append(source)
-                keywords_used.update(content_words)
-        
-        # Second pass: fill remaining slots with best remaining articles
-        remaining_slots = target_count - len(selected)
-        if remaining_slots > 0:
-            remaining_articles = [a for a in articles if a not in selected]
-            selected.extend(remaining_articles[:remaining_slots])
-        
-        return selected[:target_count]
-    
-    def _generate_summaries(self, articles):
-        """Generate concise summaries for articles"""
-        for article in articles:
-            try:
-                # Create a concise summary from title and existing summary
-                title = article['title']
-                summary = article['summary']
+                # Create Article object
+                article = Article(
+                    title=raw_article.get('title', ''),
+                    content=raw_article.get('content', ''),
+                    url=raw_article.get('url', ''),
+                    source=raw_article.get('source', ''),
+                    published_date=self._parse_date(raw_article.get('published_date'))
+                )
                 
-                # If summary is too long, truncate intelligently
-                if len(summary) > 200:
-                    sentences = summary.split('.')
-                    condensed = sentences[0]
-                    
-                    # Add more sentences if there's room
-                    for sentence in sentences[1:]:
-                        if len(condensed + sentence) < 180:
-                            condensed += '.' + sentence
-                        else:
-                            break
-                    
-                    article['summary'] = condensed.strip() + '...'
+                # Skip if essential fields are missing
+                if not article.title or not article.content or not article.url:
+                    logger.warning(f"Skipping article with missing essential fields: {article.url}")
+                    continue
                 
-                # Ensure summary is not just a repeat of title
-                if article['summary'].lower().startswith(title.lower()[:20]):
-                    article['summary'] = summary[len(title):].strip()
-                    if not article['summary']:
-                        article['summary'] = "Important development in Indian startup ecosystem."
+                # Calculate relevance score
+                article.relevance_score = self._calculate_relevance_score(article)
+                
+                # Skip articles with low relevance
+                if article.relevance_score < 0.3:
+                    logger.info(f"Skipping low relevance article: {article.title}")
+                    continue
+                
+                # Extract keywords
+                article.keywords = self._extract_keywords(article)
+                
+                # Classify into categories
+                article.categories = self._classify_article(article)
+                
+                # Generate summary
+                article.summary = self._generate_summary(article)
+                
+                # Add to processed set
+                self.processed_urls.add(article.url)
+                processed_articles.append(article)
+                
+                logger.info(f"Processed article: {article.title}")
                 
             except Exception as e:
-                print(f"⚠️  Summary generation failed: {str(e)}")
-                article['summary'] = "Significant startup news update."
+                logger.error(f"Error processing article: {e}")
+                continue
         
-        return articles
+        return processed_articles
+    
+    def _parse_date(self, date_str: str) -> datetime:
+        """Parse date string into datetime object"""
+        if not date_str:
+            return datetime.now()
+        
+        try:
+            # Try different date formats
+            formats = [
+                '%Y-%m-%d %H:%M:%S',
+                '%Y-%m-%d',
+                '%d/%m/%Y',
+                '%m/%d/%Y',
+                '%Y-%m-%dT%H:%M:%SZ',
+                '%Y-%m-%dT%H:%M:%S'
+            ]
+            
+            for fmt in formats:
+                try:
+                    return datetime.strptime(date_str, fmt)
+                except ValueError:
+                    continue
+            
+            # If all formats fail, return current time
+            logger.warning(f"Could not parse date: {date_str}")
+            return datetime.now()
+            
+        except Exception as e:
+            logger.error(f"Error parsing date {date_str}: {e}")
+            return datetime.now()
+    
+    def _calculate_relevance_score(self, article: Article) -> float:
+        """
+        Calculate relevance score for an article based on startup and India keywords
+        
+        Args:
+            article: Article object
+            
+        Returns:
+            Relevance score between 0 and 1
+        """
+        text = f"{article.title} {article.content}".lower()
+        
+        # Count startup keywords
+        startup_score = 0
+        for keyword in self.startup_keywords:
+            if keyword.lower() in text:
+                startup_score += text.count(keyword.lower())
+        
+        # Count Indian terms
+        india_score = 0
+        for term in self.indian_startup_terms:
+            if term.lower() in text:
+                india_score += text.count(term.lower())
+        
+        # Normalize scores
+        max_startup_score = len(self.startup_keywords) * 3  # Assume max 3 occurrences per keyword
+        max_india_score = len(self.indian_startup_terms) * 2  # Assume max 2 occurrences per term
+        
+        normalized_startup = min(startup_score / max_startup_score, 1.0) if max_startup_score > 0 else 0
+        normalized_india = min(india_score / max_india_score, 1.0) if max_india_score > 0 else 0
+        
+        # Weighted combination (70% startup relevance, 30% India relevance)
+        final_score = (normalized_startup * 0.7) + (normalized_india * 0.3)
+        
+        return min(final_score, 1.0)
+    
+    def _extract_keywords(self, article: Article) -> List[str]:
+        """
+        Extract relevant keywords from article
+        
+        Args:
+            article: Article object
+            
+        Returns:
+            List of extracted keywords
+        """
+        text = f"{article.title} {article.content}".lower()
+        keywords = []
+        
+        # Extract startup keywords
+        for keyword in self.startup_keywords:
+            if keyword.lower() in text:
+                keywords.append(keyword)
+        
+        # Extract Indian location keywords
+        for term in self.indian_startup_terms:
+            if term.lower() in text:
+                keywords.append(term)
+        
+        # Remove duplicates and return
+        return list(set(keywords))
+    
+    def _classify_article(self, article: Article) -> List[str]:
+        """
+        Classify article into categories based on content
+        
+        Args:
+            article: Article object
+            
+        Returns:
+            List of category names
+        """
+        text = f"{article.title} {article.content}".lower()
+        categories = []
+        
+        for category, keywords in self.category_keywords.items():
+            score = 0
+            for keyword in keywords:
+                if keyword.lower() in text:
+                    score += text.count(keyword.lower())
+            
+            # If score is above threshold, add category
+            if score >= 2:  # At least 2 keyword matches
+                categories.append(category)
+        
+        return categories if categories else ['general']
+    
+    def _generate_summary(self, article: Article) -> str:
+        """
+        Generate a summary of the article
+        
+        Args:
+            article: Article object
+            
+        Returns:
+            Article summary
+        """
+        try:
+            # Simple extractive summarization
+            sentences = self._split_into_sentences(article.content)
+            
+            if len(sentences) <= 3:
+                return article.content
+            
+            # Score sentences based on keyword frequency
+            sentence_scores = {}
+            for i, sentence in enumerate(sentences):
+                score = 0
+                sentence_lower = sentence.lower()
+                
+                # Score based on startup keywords
+                for keyword in self.startup_keywords:
+                    if keyword.lower() in sentence_lower:
+                        score += 2
+                
+                # Score based on Indian terms
+                for term in self.indian_startup_terms:
+                    if term.lower() in sentence_lower:
+                        score += 1
+                
+                # Bonus for first few sentences
+                if i < 3:
+                    score += 3 - i
+                
+                sentence_scores[i] = score
+            
+            # Select top 3 sentences
+            top_sentences = sorted(sentence_scores.items(), key=lambda x: x[1], reverse=True)[:3]
+            top_sentences = sorted(top_sentences, key=lambda x: x[0])  # Sort by original order
+            
+            summary_sentences = [sentences[i] for i, _ in top_sentences]
+            return ' '.join(summary_sentences)
+            
+        except Exception as e:
+            logger.error(f"Error generating summary: {e}")
+            # Fallback to first 200 characters
+            return article.content[:200] + "..." if len(article.content) > 200 else article.content
+    
+    def _split_into_sentences(self, text: str) -> List[str]:
+        """Split text into sentences"""
+        # Simple sentence splitting
+        sentences = re.split(r'[.!?]+', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        return sentences
+    
+    def filter_articles_by_date(self, articles: List[Article], days: int = 7) -> List[Article]:
+        """
+        Filter articles by date range
+        
+        Args:
+            articles: List of Article objects
+            days: Number of days to look back
+            
+        Returns:
+            Filtered list of articles
+        """
+        cutoff_date = datetime.now() - timedelta(days=days)
+        return [article for article in articles if article.published_date >= cutoff_date]
+    
+    def rank_articles(self, articles: List[Article]) -> List[Article]:
+        """
+        Rank articles by relevance score and recency
+        
+        Args:
+            articles: List of Article objects
+            
+        Returns:
+            Ranked list of articles
+        """
+        def ranking_score(article):
+            # Combine relevance score with recency
+            days_old = (datetime.now() - article.published_date).days
+            recency_score = max(0, 1 - (days_old / 30))  # Decay over 30 days
+            
+            return (article.relevance_score * 0.7) + (recency_score * 0.3)
+        
+        return sorted(articles, key=ranking_score, reverse=True)
+    
+    def get_trending_keywords(self, articles: List[Article], limit: int = 10) -> List[Tuple[str, int]]:
+        """
+        Get trending keywords from recent articles
+        
+        Args:
+            articles: List of Article objects
+            limit: Number of keywords to return
+            
+        Returns:
+            List of (keyword, frequency) tuples
+        """
+        keyword_counts = {}
+        
+        for article in articles:
+            for keyword in article.keywords:
+                keyword_counts[keyword] = keyword_counts.get(keyword, 0) + 1
+        
+        # Sort by frequency and return top keywords
+        trending = sorted(keyword_counts.items(), key=lambda x: x[1], reverse=True)
+        return trending[:limit]
+    
+    def get_articles_by_category(self, articles: List[Article], category: str) -> List[Article]:
+        """
+        Filter articles by category
+        
+        Args:
+            articles: List of Article objects
+            category: Category name
+            
+        Returns:
+            Filtered list of articles
+        """
+        return [article for article in articles if category.lower() in [cat.lower() for cat in article.categories]]
+    
+    def generate_content_report(self, articles: List[Article]) -> Dict:
+        """
+        Generate a comprehensive content report
+        
+        Args:
+            articles: List of Article objects
+            
+        Returns:
+            Content report dictionary
+        """
+        if not articles:
+            return {"error": "No articles to analyze"}
+        
+        # Calculate basic stats
+        total_articles = len(articles)
+        avg_relevance = sum(article.relevance_score for article in articles) / total_articles
+        
+        # Category distribution
+        category_counts = {}
+        for article in articles:
+            for category in article.categories:
+                category_counts[category] = category_counts.get(category, 0) + 1
+        
+        # Source distribution
+        source_counts = {}
+        for article in articles:
+            source_counts[article.source] = source_counts.get(article.source, 0) + 1
+        
+        # Trending keywords
+        trending_keywords = self.get_trending_keywords(articles)
+        
+        # Date range
+        dates = [article.published_date for article in articles]
+        date_range = {
+            'earliest': min(dates).isoformat() if dates else None,
+            'latest': max(dates).isoformat() if dates else None
+        }
+        
+        return {
+            'total_articles': total_articles,
+            'average_relevance_score': round(avg_relevance, 3),
+            'category_distribution': category_counts,
+            'source_distribution': source_counts,
+            'trending_keywords': trending_keywords,
+            'date_range': date_range,
+            'top_articles': [
+                {
+                    'title': article.title,
+                    'url': article.url,
+                    'relevance_score': article.relevance_score,
+                    'categories': article.categories
+                }
+                for article in self.rank_articles(articles)[:5]
+            ]
+        }
+    
+    def save_articles_to_json(self, articles: List[Article], filename: str) -> bool:
+        """
+        Save articles to JSON file
+        
+        Args:
+            articles: List of Article objects
+            filename: Output filename
+            
+        Returns:
+            Success status
+        """
+        try:
+            articles_data = []
+            for article in articles:
+                articles_data.append({
+                    'title': article.title,
+                    'content': article.content,
+                    'url': article.url,
+                    'source': article.source,
+                    'published_date': article.published_date.isoformat(),
+                    'summary': article.summary,
+                    'relevance_score': article.relevance_score,
+                    'categories': article.categories,
+                    'keywords': article.keywords
+                })
+            
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(articles_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Saved {len(articles)} articles to {filename}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving articles to JSON: {e}")
+            return False
+    
+    def load_articles_from_json(self, filename: str) -> List[Article]:
+        """
+        Load articles from JSON file
+        
+        Args:
+            filename: Input filename
+            
+        Returns:
+            List of Article objects
+        """
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                articles_data = json.load(f)
+            
+            articles = []
+            for data in articles_data:
+                article = Article(
+                    title=data['title'],
+                    content=data['content'],
+                    url=data['url'],
+                    source=data['source'],
+                    published_date=datetime.fromisoformat(data['published_date']),
+                    summary=data.get('summary', ''),
+                    relevance_score=data.get('relevance_score', 0.0),
+                    categories=data.get('categories', []),
+                    keywords=data.get('keywords', [])
+                )
+                articles.append(article)
+            
+            logger.info(f"Loaded {len(articles)} articles from {filename}")
+            return articles
+            
+        except Exception as e:
+            logger.error(f"Error loading articles from JSON: {e}")
+            return []
 
-# Test function for standalone execution
+# Example usage and testing
 if __name__ == "__main__":
-    # Test with sample articles
+    # Initialize the curator
+    curator = ContentCuratorAgent()
+    
+    # Example raw articles data
     sample_articles = [
         {
-            'title': 'Flipkart raises $1 billion in Series H funding',
-            'summary': 'E-commerce giant Flipkart has raised $1 billion in its latest funding round, valuing the company at $37.6 billion.',
-            'source': 'Economic Times',
-            'published': datetime.now(),
-            'relevance_score': 8
+            'title': 'Indian Fintech Startup Raises $50M Series B',
+            'content': 'A Bangalore-based fintech startup focused on digital payments has raised $50 million in Series B funding. The startup plans to expand its services across India and enhance its payment gateway technology.',
+            'url': 'https://example.com/article1',
+            'source': 'TechCrunch India',
+            'published_date': '2024-01-15 10:30:00'
+        },
+        {
+            'title': 'New EdTech Platform Launches in Mumbai',
+            'content': 'An innovative education technology platform has launched in Mumbai, offering AI-powered learning solutions for students. The platform uses machine learning to provide personalized learning experiences.',
+            'url': 'https://example.com/article2',
+            'source': 'The Economic Times',
+            'published_date': '2024-01-14 14:20:00'
         }
     ]
     
-    curator = ContentCuratorAgent()
-    top_stories = curator.curate_top_stories(sample_articles)
+    # Process articles
+    processed_articles = curator.process_articles(sample_articles)
     
-    print(f"\n📊 Curation Results:")
-    for i, story in enumerate(top_stories, 1):
-        print(f"{i}. {story['title']}")
-        print(f"   Score: {story['importance_score']:.1f}")
-        print(f"   Source: {story['source']}")
-        print()
+    # Generate report
+    report = curator.generate_content_report(processed_articles)
+    print("Content Report:")
+    print(json.dumps(report, indent=2))
+    
+    # Save to file
+    curator.save_articles_to_json(processed_articles, 'processed_articles.json')
