@@ -1,0 +1,135 @@
+name: 🚀 Daily Indian Startup News Generator
+
+# Trigger: Every day at 9:00 AM IST (3:30 AM UTC)
+on:
+  schedule:
+    # Cron format: minute hour day month weekday
+    # 3:30 AM UTC = 9:00 AM IST
+    - cron: '30 3 * * *'
+  
+  # Allow manual triggering for testing
+  workflow_dispatch:
+    inputs:
+      test_run:
+        description: 'Test run (yes/no)'
+        required: false
+        default: 'no'
+
+# Define the automation job
+jobs:
+  generate-startup-news:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # Step 1: Get the code from repository
+    - name: 📥 Checkout Repository
+      uses: actions/checkout@v4
+    
+    # Step 2: Set up Python environment
+    - name: 🐍 Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    # Step 3: Install Python dependencies
+    - name: 📦 Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install feedparser requests matplotlib pillow numpy textwrap3
+        pip install python-dateutil
+        echo "✅ Python dependencies installed"
+    
+    # Step 4: Install Ollama for local AI (free)
+    - name: 🤖 Install Ollama AI
+      run: |
+        echo "🔄 Installing Ollama for local AI processing..."
+        curl -fsSL https://ollama.com/install.sh | sh
+        echo "✅ Ollama installed"
+        
+        # Start Ollama service
+        ollama serve &
+        sleep 10
+        
+        # Pull the AI model (using smaller model for GitHub Actions)
+        echo "📥 Downloading AI model..."
+        ollama pull llama2:7b-chat || echo "⚠️ AI model download failed, will use fallback"
+        echo "✅ AI setup complete"
+    
+    # Step 5: Set up environment variables for email
+    - name: 🔐 Configure Email Settings
+      env:
+        GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: |
+        echo "📧 Setting up email configuration..."
+        echo "SENDER_EMAIL=${{ secrets.RECIPIENT_EMAIL }}" >> $GITHUB_ENV
+        echo "GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}" >> $GITHUB_ENV
+        echo "RECIPIENT_EMAIL=${{ secrets.RECIPIENT_EMAIL }}" >> $GITHUB_ENV
+        echo "✅ Email environment configured"
+    
+    # Step 6: Run the main news generation script
+    - name: 🚀 Generate Daily News Digest
+      run: |
+        echo "🎯 Starting Indian Startup News AI Agent System..."
+        echo "⏰ Current time: $(date)"
+        echo "🌍 Timezone: IST (UTC+5:30)"
+        echo "📍 Target: Daily 9:00 AM IST execution"
+        echo ""
+        
+        # Run the main script
+        python main.py
+        
+        echo "✅ News generation completed!"
+    
+    # Step 7: Upload generated carousel slides as artifacts
+    - name: 📸 Save Carousel Slides
+      uses: actions/upload-artifact@v3
+      if: always()  # Upload even if there were errors
+      with:
+        name: linkedin-carousel-slides-${{ github.run_number }}
+        path: |
+          slide_*.png
+        retention-days: 7
+    
+    # Step 8: Create a summary report
+    - name: 📊 Generate Execution Summary
+      if: always()
+      run: |
+        echo "## 🚀 Daily Startup News Execution Summary" >> $GITHUB_STEP_SUMMARY
+        echo "**Date:** $(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
+        echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Count generated slides
+        if ls slide_*.png 1> /dev/null 2>&1; then
+          SLIDE_COUNT=$(ls slide_*.png | wc -l)
+          echo "**Carousel Slides Generated:** $SLIDE_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "**Files:**" >> $GITHUB_STEP_SUMMARY
+          for file in slide_*.png; do
+            echo "- $file" >> $GITHUB_STEP_SUMMARY
+          done
+        else
+          echo "**Carousel Slides Generated:** 0" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📧 **Email Status:** Check your inbox for the daily digest" >> $GITHUB_STEP_SUMMARY
+        echo "📱 **Next Steps:** Download carousel images from email and post to LinkedIn" >> $GITHUB_STEP_SUMMARY
+    
+    # Step 9: Cleanup (optional)
+    - name: 🧹 Cleanup Temporary Files
+      if: always()
+      run: |
+        echo "🧹 Cleaning up temporary files..."
+        # Keep carousel slides but remove other temporary files
+        rm -f *.log *.tmp 2>/dev/null || true
+        echo "✅ Cleanup completed"
+
+# Additional workflow settings
+env:
+  # Set timezone for logs
+  TZ: Asia/Kolkata
+  
+  # Python settings
+  PYTHONUNBUFFERED: 1
+  PYTHONDONTWRITEBYTECODE: 1
