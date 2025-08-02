@@ -45,34 +45,27 @@ class ContentCuratorAgent:
             }
         }
         
-        # Try to use different AI backends (fallback approach)
-        self.ai_available = self._check_ai_availability()
+        # Simple fallback scoring (no AI dependencies)
+        self.ai_available = False
     
     def curate_top_stories(self, articles, target_count=10):
         """Main method to curate and rank stories"""
-        print(f"🧠 Starting AI curation of {len(articles)} articles...")
+        print(f"🧠 Starting content curation of {len(articles)} articles...")
         
         if len(articles) == 0:
             return []
         
-        # Step 1: Calculate base scores using keyword analysis
+        # Calculate base scores using keyword analysis
         print("📊 Calculating relevance scores...")
         scored_articles = self._calculate_base_scores(articles)
         
-        # Step 2: Use AI to refine scores if available
-        if self.ai_available:
-            print("🤖 Enhancing scores with AI analysis...")
-            scored_articles = self._ai_enhance_scores(scored_articles)
-        else:
-            print("📋 Using rule-based scoring (AI not available)")
-        
-        # Step 3: Apply recency boost
+        # Apply recency boost
         scored_articles = self._apply_recency_boost(scored_articles)
         
-        # Step 4: Ensure diversity in selection
+        # Ensure diversity in selection
         final_selection = self._ensure_diversity(scored_articles, target_count)
         
-        # Step 5: Generate summaries
+        # Generate summaries
         final_selection = self._generate_summaries(final_selection)
         
         print(f"✅ Selected top {len(final_selection)} stories")
@@ -119,119 +112,6 @@ class ContentCuratorAgent:
         
         return scored_articles
     
-    def _check_ai_availability(self):
-        """Check if AI services are available"""
-        try:
-            # Try Ollama first (local AI)
-            result = subprocess.run(['ollama', 'list'], 
-                                  capture_output=True, text=True, timeout=10)
-            if result.returncode == 0 and 'llama' in result.stdout:
-                print("✅ Ollama AI available")
-                return 'ollama'
-        except:
-            pass
-        
-        # Try Hugging Face Transformers (if available)
-        try:
-            import transformers
-            print("✅ Hugging Face Transformers available")
-            return 'huggingface'
-        except ImportError:
-            pass
-        
-        print("ℹ️  No AI backend available, using rule-based scoring")
-        return False
-    
-    def _ai_enhance_scores(self, articles):
-        """Use AI to enhance importance scores"""
-        if self.ai_available == 'ollama':
-            return self._ollama_enhance_scores(articles)
-        elif self.ai_available == 'huggingface':
-            return self._huggingface_enhance_scores(articles)
-        else:
-            return articles
-    
-    def _ollama_enhance_scores(self, articles):
-        """Use Ollama to enhance scores"""
-        enhanced_articles = []
-        
-        for article in articles[:20]:  # Limit to prevent timeout
-            try:
-                prompt = f"""
-Rate this Indian startup news importance from 1-10:
-
-Title: {article['title']}
-Summary: {article['summary'][:300]}
-
-Consider:
-- Funding amount and stage
-- Company significance 
-- Market impact
-- Innovation level
-
-Respond with only a number 1-10:
-"""
-                
-                result = subprocess.run([
-                    'ollama', 'generate', 'llama2', 
-                    '--prompt', prompt
-                ], capture_output=True, text=True, timeout=30)
-                
-                if result.returncode == 0:
-                    ai_score = self._extract_number(result.stdout)
-                    if ai_score:
-                        # Combine rule-based and AI scores
-                        article['importance_score'] = (
-                            article['importance_score'] * 0.7 + ai_score * 3
-                        )
-                
-                enhanced_articles.append(article)
-                
-            except Exception as e:
-                print(f"⚠️  AI scoring failed for article: {str(e)}")
-                enhanced_articles.append(article)
-        
-        # Add remaining articles without AI enhancement
-        enhanced_articles.extend(articles[20:])
-        return enhanced_articles
-    
-    def _huggingface_enhance_scores(self, articles):
-        """Use Hugging Face models to enhance scores"""
-        try:
-            from transformers import pipeline
-            
-            # Use sentiment analysis as a proxy for importance
-            classifier = pipeline("sentiment-analysis")
-            
-            for article in articles[:15]:  # Limit processing
-                try:
-                    text = article['title'] + ' ' + article['summary'][:200]
-                    result = classifier(text)
-                    
-                    # Boost score for positive sentiment (usually good news)
-                    if result[0]['label'] == 'POSITIVE':
-                        article['importance_score'] += result[0]['score'] * 2
-                        
-                except Exception as e:
-                    print(f"⚠️  HF scoring failed: {str(e)}")
-                    continue
-        
-        except Exception as e:
-            print(f"⚠️  HuggingFace not properly available: {str(e)}")
-        
-        return articles
-    
-    def _extract_number(self, text):
-        """Extract a number from AI response"""
-        try:
-            # Look for numbers in the response
-            numbers = re.findall(r'\b([1-9]|10)\b', text)
-            if numbers:
-                return int(numbers[0])
-        except:
-            pass
-        return None
-    
     def _apply_recency_boost(self, articles):
         """Apply recency boost to scores"""
         now = datetime.now()
@@ -260,7 +140,7 @@ Respond with only a number 1-10:
         articles.sort(key=lambda x: x['importance_score'], reverse=True)
         
         selected = []
-        sources_used = set()
+        sources_used = []
         keywords_used = set()
         
         # First pass: select high-scoring diverse articles
@@ -272,12 +152,13 @@ Respond with only a number 1-10:
             content_words = set(article['title'].lower().split())
             
             # Check for diversity
-            source_limit_reached = sources_used.count(source) >= 3
+            source_count = sources_used.count(source)
+            source_limit_reached = source_count >= 3
             too_similar = len(content_words & keywords_used) > 2
             
             if not source_limit_reached and not too_similar:
                 selected.append(article)
-                sources_used.add(source)
+                sources_used.append(source)
                 keywords_used.update(content_words)
         
         # Second pass: fill remaining slots with best remaining articles
@@ -289,3 +170,58 @@ Respond with only a number 1-10:
         return selected[:target_count]
     
     def _generate_summaries(self, articles):
+        """Generate concise summaries for articles"""
+        for article in articles:
+            try:
+                # Create a concise summary from title and existing summary
+                title = article['title']
+                summary = article['summary']
+                
+                # If summary is too long, truncate intelligently
+                if len(summary) > 200:
+                    sentences = summary.split('.')
+                    condensed = sentences[0]
+                    
+                    # Add more sentences if there's room
+                    for sentence in sentences[1:]:
+                        if len(condensed + sentence) < 180:
+                            condensed += '.' + sentence
+                        else:
+                            break
+                    
+                    article['summary'] = condensed.strip() + '...'
+                
+                # Ensure summary is not just a repeat of title
+                if article['summary'].lower().startswith(title.lower()[:20]):
+                    article['summary'] = summary[len(title):].strip()
+                    if not article['summary']:
+                        article['summary'] = "Important development in Indian startup ecosystem."
+                
+            except Exception as e:
+                print(f"⚠️  Summary generation failed: {str(e)}")
+                article['summary'] = "Significant startup news update."
+        
+        return articles
+
+# Test function for standalone execution
+if __name__ == "__main__":
+    # Test with sample articles
+    sample_articles = [
+        {
+            'title': 'Flipkart raises $1 billion in Series H funding',
+            'summary': 'E-commerce giant Flipkart has raised $1 billion in its latest funding round, valuing the company at $37.6 billion.',
+            'source': 'Economic Times',
+            'published': datetime.now(),
+            'relevance_score': 8
+        }
+    ]
+    
+    curator = ContentCuratorAgent()
+    top_stories = curator.curate_top_stories(sample_articles)
+    
+    print(f"\n📊 Curation Results:")
+    for i, story in enumerate(top_stories, 1):
+        print(f"{i}. {story['title']}")
+        print(f"   Score: {story['importance_score']:.1f}")
+        print(f"   Source: {story['source']}")
+        print()
