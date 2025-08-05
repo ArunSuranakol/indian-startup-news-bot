@@ -206,4 +206,4 @@ class CarouselDesignerAgent:
         
         # Footer
         footer_text = f"Slide {rank} of 10 • {datetime.now().strftime('%Y')}"
-        ax.text(0.5, 0.05, footer_text, ha='center', va='center'
+        ax.text(0.5, 0.05, footer_text, ha='center', va='center')
