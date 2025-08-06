@@ -245,4 +245,7 @@ class EmailSenderAgent:
                                 <li>Save all images to your computer</li>
                                 <li>Go to LinkedIn and create a new post</li>
                                 <li>Upload all images in order (they'll create a carousel automatically)</li>
-                                <li>Add your
+                                Add your caption and post!</li>
+    </ol>
+</div>
+"""
